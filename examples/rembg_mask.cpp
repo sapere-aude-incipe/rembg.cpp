@@ -5,6 +5,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <sstream>
 #include <vector>
 
 namespace {
@@ -15,6 +16,8 @@ struct options {
     std::string input_dir;
     std::string output_path;
     std::string out_dir = "masks";
+    rembg::remove_options remove_options;
+    bool only_mask = false;
 };
 
 void print_usage(const char * exe) {
@@ -28,7 +31,10 @@ void print_usage(const char * exe) {
         "  --output PATH  Exact output path for single-image mode\n"
         "  --model-size N  U2Net input side length (default: 320)\n"
         "  --threads N     ONNX Runtime CPU thread count (default: 4)\n"
-        "  --invert        Save foreground black on white background\n",
+        "  --only-mask     Save the grayscale foreground mask instead of RGBA cutout\n"
+        "  --invert        Invert the generated mask\n"
+        "  --putalpha      Preserve RGB pixels and place the mask in the alpha channel\n"
+        "  --bgcolor RGBA  Composite over background, e.g. 255,255,255,255\n",
         exe, exe, exe);
 }
 
@@ -48,6 +54,28 @@ bool require_value(int argc, char ** argv, int & i, std::string & out) {
         return false;
     }
     out = argv[++i];
+    return true;
+}
+
+bool parse_color(const std::string & value, rembg::color_rgba & out) {
+    std::vector<int> channels;
+    std::stringstream ss(value);
+    std::string part;
+    while (std::getline(ss, part, ',')) {
+        if (part.empty()) return false;
+        char * end = nullptr;
+        const long v = std::strtol(part.c_str(), &end, 10);
+        if ((end && *end) || v < 0 || v > 255) return false;
+        channels.push_back(static_cast<int>(v));
+    }
+    if (channels.size() != 3 && channels.size() != 4) {
+        return false;
+    }
+
+    out.r = static_cast<unsigned char>(channels[0]);
+    out.g = static_cast<unsigned char>(channels[1]);
+    out.b = static_cast<unsigned char>(channels[2]);
+    out.a = static_cast<unsigned char>(channels.size() == 4 ? channels[3] : 255);
     return true;
 }
 
@@ -74,8 +102,19 @@ bool parse_args(int argc, char ** argv, options & opt) {
                 std::fprintf(stderr, "Invalid --threads\n");
                 return false;
             }
+        } else if (arg == "--only-mask") {
+            opt.only_mask = true;
         } else if (arg == "--invert") {
             opt.params.invert = true;
+        } else if (arg == "--putalpha") {
+            opt.remove_options.mode = rembg::cutout_mode::put_alpha;
+        } else if (arg == "--bgcolor") {
+            std::string value;
+            if (!require_value(argc, argv, i, value) || !parse_color(value, opt.remove_options.background)) {
+                std::fprintf(stderr, "Invalid --bgcolor. Expected r,g,b or r,g,b,a\n");
+                return false;
+            }
+            opt.remove_options.apply_background = true;
         } else if (arg == "--help" || arg == "-h") {
             print_usage(argv[0]);
             std::exit(0);
@@ -104,7 +143,7 @@ std::string output_path_for(const std::string & image_path, const options & opt)
     if (!opt.output_path.empty()) {
         return opt.output_path;
     }
-    return rembg::default_output_path(image_path, opt.out_dir);
+    return rembg::default_output_path(image_path, opt.out_dir, opt.only_mask);
 }
 
 } // namespace
@@ -144,9 +183,14 @@ int main(int argc, char ** argv) {
         for (const std::string & image : images) {
             const std::string output_path = output_path_for(image, opt);
             std::printf("Image: %s\n", image.c_str());
-            rembg::mask_u8 mask = session.predict_file(image);
-            rembg::save_mask_png(output_path, mask);
-            std::printf("  Saved mask: %s\n", output_path.c_str());
+            if (opt.only_mask) {
+                rembg::mask_u8 mask = session.predict_file(image);
+                rembg::save_mask_png(output_path, mask);
+            } else {
+                rembg::image_rgba_u8 cutout = session.remove_file(image, opt.remove_options);
+                rembg::save_png(output_path, cutout);
+            }
+            std::printf("  Saved output: %s\n", output_path.c_str());
             ++ok;
         }
 

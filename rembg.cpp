@@ -18,6 +18,7 @@
 #include <cerrno>
 #include <cctype>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <stdexcept>
 
@@ -170,6 +171,12 @@ std::vector<unsigned char> normalize_mask(const float * pred, size_t count, bool
     return mask;
 }
 
+void png_write_callback(void * context, void * data, int size) {
+    auto * out = static_cast<std::vector<unsigned char> *>(context);
+    const auto * bytes = static_cast<unsigned char *>(data);
+    out->insert(out->end(), bytes, bytes + size);
+}
+
 #ifdef _WIN32
 std::wstring widen(const std::string & s) {
     if (s.empty()) return std::wstring();
@@ -282,6 +289,35 @@ mask_u8 session::predict_file(const std::string & image_path) const {
     return predict(load_image_file(image_path));
 }
 
+std::vector<unsigned char> session::predict_bytes_png(const unsigned char * data, size_t size) const {
+    return encode_png(predict(load_image_bytes(data, size)));
+}
+
+std::vector<unsigned char> session::predict_bytes_png(const std::vector<unsigned char> & data) const {
+    return predict_bytes_png(data.data(), data.size());
+}
+
+image_rgba_u8 session::remove(const image_u8 & image, const remove_options & options) const {
+    return apply_alpha(image, predict(image), options);
+}
+
+image_rgba_u8 session::remove_file(const std::string & image_path, const remove_options & options) const {
+    return remove(load_image_file(image_path), options);
+}
+
+std::vector<unsigned char> session::remove_bytes(
+    const unsigned char * data,
+    size_t size,
+    const remove_options & options) const {
+    return encode_png(remove(load_image_bytes(data, size), options));
+}
+
+std::vector<unsigned char> session::remove_bytes(
+    const std::vector<unsigned char> & data,
+    const remove_options & options) const {
+    return remove_bytes(data.data(), data.size(), options);
+}
+
 image_u8 load_image_file(const std::string & path) {
     int w = 0, h = 0, c = 0;
     unsigned char * data = stbi_load(path.c_str(), &w, &h, &c, 3);
@@ -299,6 +335,92 @@ image_u8 load_image_file(const std::string & path) {
     return image;
 }
 
+image_u8 load_image_bytes(const unsigned char * data, size_t size) {
+    if (data == nullptr || size == 0 || size > static_cast<size_t>(std::numeric_limits<int>::max())) {
+        throw std::invalid_argument("invalid encoded image bytes");
+    }
+
+    int w = 0, h = 0, c = 0;
+    unsigned char * decoded = stbi_load_from_memory(
+        data,
+        static_cast<int>(size),
+        &w,
+        &h,
+        &c,
+        3);
+    if (!decoded || w <= 0 || h <= 0) {
+        if (decoded) stbi_image_free(decoded);
+        throw std::runtime_error("failed to decode image bytes");
+    }
+
+    image_u8 image;
+    image.width = w;
+    image.height = h;
+    image.channels = 3;
+    image.pixels.assign(decoded, decoded + static_cast<size_t>(w) * h * 3);
+    stbi_image_free(decoded);
+    return image;
+}
+
+image_u8 load_image_bytes(const std::vector<unsigned char> & data) {
+    return load_image_bytes(data.data(), data.size());
+}
+
+image_rgba_u8 apply_alpha(const image_u8 & image, const mask_u8 & mask, const remove_options & options) {
+    if (image.width <= 0 || image.height <= 0 || image.channels != 3 || image.pixels.empty()) {
+        throw std::invalid_argument("invalid RGB image");
+    }
+    if (mask.width != image.width || mask.height != image.height || mask.pixels.empty()) {
+        throw std::invalid_argument("mask size does not match image");
+    }
+
+    image_rgba_u8 out;
+    out.width = image.width;
+    out.height = image.height;
+    out.channels = 4;
+    out.pixels.resize(static_cast<size_t>(image.width) * image.height * 4);
+
+    for (int y = 0; y < image.height; ++y) {
+        for (int x = 0; x < image.width; ++x) {
+            const size_t src = (static_cast<size_t>(y) * image.width + x) * 3;
+            const size_t dst = (static_cast<size_t>(y) * image.width + x) * 4;
+            const unsigned char alpha = mask.pixels[static_cast<size_t>(y) * image.width + x];
+            const float a = alpha / 255.0f;
+
+            unsigned char r = image.pixels[src + 0];
+            unsigned char g = image.pixels[src + 1];
+            unsigned char b = image.pixels[src + 2];
+            unsigned char out_alpha = alpha;
+
+            if (options.mode == cutout_mode::composite) {
+                r = static_cast<unsigned char>(r * a + 0.5f);
+                g = static_cast<unsigned char>(g * a + 0.5f);
+                b = static_cast<unsigned char>(b * a + 0.5f);
+            }
+
+            if (options.apply_background) {
+                const float ba = options.background.a / 255.0f;
+                const float out_a = a + ba * (1.0f - a);
+                if (out_a > 1e-6f) {
+                    r = static_cast<unsigned char>(((image.pixels[src + 0] * a) + (options.background.r * ba * (1.0f - a))) / out_a + 0.5f);
+                    g = static_cast<unsigned char>(((image.pixels[src + 1] * a) + (options.background.g * ba * (1.0f - a))) / out_a + 0.5f);
+                    b = static_cast<unsigned char>(((image.pixels[src + 2] * a) + (options.background.b * ba * (1.0f - a))) / out_a + 0.5f);
+                    out_alpha = static_cast<unsigned char>(out_a * 255.0f + 0.5f);
+                } else {
+                    r = g = b = out_alpha = 0;
+                }
+            }
+
+            out.pixels[dst + 0] = r;
+            out.pixels[dst + 1] = g;
+            out.pixels[dst + 2] = b;
+            out.pixels[dst + 3] = out_alpha;
+        }
+    }
+
+    return out;
+}
+
 void save_mask_png(const std::string & path, const mask_u8 & mask) {
     if (mask.width <= 0 || mask.height <= 0 || mask.pixels.empty()) {
         throw std::invalid_argument("invalid mask");
@@ -306,6 +428,51 @@ void save_mask_png(const std::string & path, const mask_u8 & mask) {
     if (stbi_write_png(path.c_str(), mask.width, mask.height, 1, mask.pixels.data(), mask.width) == 0) {
         throw std::runtime_error("failed to save mask: " + path);
     }
+}
+
+void save_png(const std::string & path, const image_rgba_u8 & image) {
+    if (image.width <= 0 || image.height <= 0 || image.channels != 4 || image.pixels.empty()) {
+        throw std::invalid_argument("invalid RGBA image");
+    }
+    if (stbi_write_png(path.c_str(), image.width, image.height, 4, image.pixels.data(), image.width * 4) == 0) {
+        throw std::runtime_error("failed to save PNG: " + path);
+    }
+}
+
+std::vector<unsigned char> encode_png(const mask_u8 & mask) {
+    if (mask.width <= 0 || mask.height <= 0 || mask.pixels.empty()) {
+        throw std::invalid_argument("invalid mask");
+    }
+    std::vector<unsigned char> out;
+    if (stbi_write_png_to_func(
+            png_write_callback,
+            &out,
+            mask.width,
+            mask.height,
+            1,
+            mask.pixels.data(),
+            mask.width) == 0) {
+        throw std::runtime_error("failed to encode mask PNG");
+    }
+    return out;
+}
+
+std::vector<unsigned char> encode_png(const image_rgba_u8 & image) {
+    if (image.width <= 0 || image.height <= 0 || image.channels != 4 || image.pixels.empty()) {
+        throw std::invalid_argument("invalid RGBA image");
+    }
+    std::vector<unsigned char> out;
+    if (stbi_write_png_to_func(
+            png_write_callback,
+            &out,
+            image.width,
+            image.height,
+            4,
+            image.pixels.data(),
+            image.width * 4) == 0) {
+        throw std::runtime_error("failed to encode PNG");
+    }
+    return out;
 }
 
 bool has_image_extension(const std::string & path) {
@@ -363,8 +530,8 @@ std::string sanitize_filename(const std::string & value) {
     return out.empty() ? "mask" : out;
 }
 
-std::string default_output_path(const std::string & image_path, const std::string & out_dir) {
-    return path_join(out_dir, sanitize_filename(stem_of(image_path)) + "__rembg__mask.png");
+std::string default_output_path(const std::string & image_path, const std::string & out_dir, bool only_mask) {
+    return path_join(out_dir, sanitize_filename(stem_of(image_path)) + (only_mask ? "__rembg__mask.png" : "__rembg.png"));
 }
 
 bool ensure_directory(const std::string & path) {
