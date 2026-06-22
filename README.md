@@ -114,6 +114,7 @@ rembg::save_png("output.png", output);
 ```cpp
 #include "rembg.h"
 #include <fstream>
+#include <iterator>
 
 std::vector<unsigned char> read_all(const std::string & path) {
     std::ifstream in(path, std::ios::binary);
@@ -124,7 +125,9 @@ auto input = read_all("input.png");
 auto output_png = session.remove_bytes(input);
 
 std::ofstream out("output.png", std::ios::binary);
-out.write(reinterpret_cast<const char *>(output_png.data()), output_png.size());
+out.write(
+    reinterpret_cast<const char *>(output_png.data()),
+    static_cast<std::streamsize>(output_png.size()));
 ```
 
 See `examples/rembg_bytes.cpp` for a complete byte-input/byte-output example.

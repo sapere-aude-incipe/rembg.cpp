@@ -14,6 +14,10 @@ jobs:
         shell: pwsh
         run: ./scripts/download_onnxruntime.ps1
 
+      - name: Download u2netp model
+        shell: pwsh
+        run: ./scripts/download_u2netp.ps1
+
       - name: Configure
         shell: pwsh
         run: cmake -S . -B build -DONNXRUNTIME_ROOT="$PWD/deps/onnxruntime-win-x64-1.23.2"
@@ -21,3 +25,41 @@ jobs:
       - name: Build
         shell: pwsh
         run: cmake --build build --config Release
+
+      - name: Smoke test examples
+        shell: pwsh
+        run: |
+          $bmp = [Convert]::FromBase64String("Qk1GAAAAAAAAADYAAAAoAAAAAgAAAAIAAAABABgAAAAAABAAAAATCwAAEwsAAAAAAAAAAAAA/wAA////AAAAAP8A/wAAAA==")
+          [IO.File]::WriteAllBytes("sample.bmp", $bmp)
+
+          $exeDir = Join-Path $PWD "build/examples/Release"
+          & (Join-Path $exeDir "rembg_mask.exe") --model models/u2netp.onnx --image sample.bmp --output cutout.png
+          & (Join-Path $exeDir "rembg_mask.exe") --model models/u2netp.onnx --image sample.bmp --output mask.png --only-mask
+          & (Join-Path $exeDir "rembg_bytes.exe") models/u2netp.onnx sample.bmp bytes_cutout.png
+
+          function Assert-File($path) {
+            if (-not (Test-Path -LiteralPath $path)) {
+              throw "Missing expected output: $path"
+            }
+            if ((Get-Item -LiteralPath $path).Length -le 0) {
+              throw "Empty output: $path"
+            }
+          }
+
+          function Assert-PngColorType($path, $expected) {
+            $bytes = [IO.File]::ReadAllBytes($path)
+            if ($bytes.Length -lt 26) {
+              throw "Not enough PNG bytes: $path"
+            }
+            $actual = [int]$bytes[25]
+            if ($actual -ne $expected) {
+              throw "Unexpected PNG color type for $path. Expected $expected, got $actual"
+            }
+          }
+
+          Assert-File cutout.png
+          Assert-File mask.png
+          Assert-File bytes_cutout.png
+          Assert-PngColorType cutout.png 6
+          Assert-PngColorType mask.png 0
+          Assert-PngColorType bytes_cutout.png 6
