@@ -1,0 +1,23 @@
+name: Windows CMake
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download ONNX Runtime
+        shell: pwsh
+        run: ./scripts/download_onnxruntime.ps1
+
+      - name: Configure
+        shell: pwsh
+        run: cmake -S . -B build -DONNXRUNTIME_ROOT="$PWD/deps/onnxruntime-win-x64-1.23.2"
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build build --config Release

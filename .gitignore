@@ -1,0 +1,21 @@
+# Build output
+build*/
+out/
+
+# Local dependencies and model files
+deps/
+models/
+*.onnx
+onnxruntime-*.zip
+
+# Generated masks and logs
+masks/
+*_mask.png
+*.log
+
+# Editor and OS noise
+.vs/
+.vscode/
+*.user
+Thumbs.db
+Desktop.ini
