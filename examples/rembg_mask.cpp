@@ -15,7 +15,7 @@ struct options {
     std::string image_path;
     std::string input_dir;
     std::string output_path;
-    std::string out_dir = "masks";
+    std::string out_dir = "output";
     rembg::remove_options remove_options;
     bool only_mask = false;
 };

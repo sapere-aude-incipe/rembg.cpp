@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Added GitHub Actions smoke tests for default RGBA cutout output, mask-only
+  output, and encoded byte input/output.
+- Changed the CLI's implicit output directory from `masks` to `output`.
+- Fixed the README byte API snippet to include `<iterator>` and use
+  `std::streamsize` for writing byte buffers.
+
 ## v0.2.0 - 2026-06-22
 
 - Broadened the library from mask generation to rembg-style background removal.
